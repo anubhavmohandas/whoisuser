@@ -1,0 +1,22 @@
+# WhoisUser - Python Dependencies
+# Required packages for username OSINT investigation tool
+
+# Core HTTP requests
+requests>=2.31.0
+urllib3>=2.1.0
+certifi>=2023.11.17
+
+# Terminal colors and formatting
+colorama>=0.4.6
+
+# Screenshot automation (Selenium)
+selenium>=4.15.0
+webdriver-manager>=4.0.1
+
+# Optional: If you want to use these tools via Python
+# maigret>=0.4.4
+# holehe>=1.0.0
+# social-analyzer>=1.0.0
+
+# Note: Sherlock and Blackbird are installed via git clone
+# in the install.sh script, not via pip
