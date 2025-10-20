@@ -3,7 +3,7 @@
 WhoisUser - Professional Username OSINT & Forensic Investigation Tool
 Author: Anubhav
 Description: Automated username enumeration with integrated OSINT tools
-Version: 2.5 (Enhanced & Merged)
+Version: 2.6 (Fixed Screenshots & OSINT Tools)
 """
 
 import requests
@@ -19,6 +19,7 @@ import subprocess
 import shutil
 from urllib.parse import urlparse
 import logging
+import platform
 
 # Initialize colorama
 init(autoreset=True)
@@ -64,19 +65,36 @@ class WhoisUser:
         })
         
         # Rate limiting
-        self.request_delay = 0.3  # seconds between requests
+        self.request_delay = 0.3
         self.last_request_time = {}
+        
+        # Selenium driver cache
+        self.driver = None
 
     def check_osint_tools(self):
         """Check which OSINT tools are available on the system"""
-        tools = {
-            'sherlock': shutil.which('sherlock'),
-            'maigret': shutil.which('maigret'),
-            'social-analyzer': shutil.which('social-analyzer'),
-            'holehe': shutil.which('holehe'),
-            'blackbird': shutil.which('blackbird'),
-        }
-        return {name: path for name, path in tools.items() if path}
+        tools_to_check = ['sherlock', 'maigret', 'social-analyzer', 'holehe', 'blackbird']
+        tools = {}
+        
+        for tool in tools_to_check:
+            path = shutil.which(tool)
+            if path:
+                tools[tool] = path
+            else:
+                # Check in common installation paths
+                common_paths = [
+                    f'/usr/local/bin/{tool}',
+                    f'/usr/bin/{tool}',
+                    f'~/.local/bin/{tool}',
+                    f'/opt/{tool}/{tool}',
+                ]
+                for cpath in common_paths:
+                    expanded_path = os.path.expanduser(cpath)
+                    if os.path.exists(expanded_path) and os.access(expanded_path, os.X_OK):
+                        tools[tool] = expanded_path
+                        break
+        
+        return tools
 
     def get_all_platforms(self):
         """Returns dictionary of all 100+ platforms to check"""
@@ -632,23 +650,19 @@ class WhoisUser:
             check_type = platform_data.get("check_type", "standard")
         
         try:
-            # Use JSON API if available
             if check_type == "json" and "api_url" in platform_data:
                 result = self.check_json_api(platform_name, platform_data)
                 if result:
                     return result
             
-            # Rate limiting
             self.rate_limit_domain(url)
             
-            # Standard HTTP check
             response = self.session.get(
                 url, 
                 timeout=10, 
                 allow_redirects=True
             )
             
-            # Check status code
             if response.status_code == 404:
                 return None
             
@@ -661,14 +675,11 @@ class WhoisUser:
                 })
                 return None
             
-            # Check for redirects to login/homepage
             if any(x in response.url.lower() for x in ['login', 'signup', 'signin', 'register']):
                 return None
             
-            # Check content
             content_lower = response.text.lower()
             
-            # Expanded not-found patterns
             not_found_patterns = [
                 "page not found", "user not found", "doesn't exist",
                 "not available", "profile not found",
@@ -684,11 +695,9 @@ class WhoisUser:
             if any(pattern in content_lower for pattern in not_found_patterns):
                 return None
             
-            # Check minimum content length
             if len(response.text.strip()) < 200:
                 return None
             
-            # Success
             print(f"{Fore.GREEN}[✓] {Fore.WHITE}{platform_name:<25} {Fore.CYAN}→ {url}{Style.RESET_ALL}")
             return {
                 'platform': platform_name,
@@ -713,6 +722,70 @@ class WhoisUser:
         
         return None
 
+    def setup_selenium_driver(self):
+        """Setup Selenium WebDriver with proper configuration"""
+        if self.driver:
+            return self.driver
+        
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.chrome.service import Service
+            
+            chrome_options = Options()
+            chrome_options.add_argument('--headless')
+            chrome_options.add_argument('--no-sandbox')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument('--disable-gpu')
+            chrome_options.add_argument('--window-size=1920,1080')
+            chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+            chrome_options.add_argument(f'user-agent={self.session.headers["User-Agent"]}')
+            chrome_options.add_argument('--disable-software-rasterizer')
+            
+            # Try to find Chrome/Chromium binary
+            chrome_binary_paths = [
+                '/usr/bin/google-chrome',
+                '/usr/bin/google-chrome-stable',
+                '/usr/bin/chromium',
+                '/usr/bin/chromium-browser',
+                '/snap/bin/chromium',
+            ]
+            
+            for chrome_path in chrome_binary_paths:
+                if os.path.exists(chrome_path):
+                    chrome_options.binary_location = chrome_path
+                    break
+            
+            # Try using system chromedriver first
+            chromedriver_paths = [
+                '/usr/bin/chromedriver',
+                '/usr/local/bin/chromedriver',
+                shutil.which('chromedriver'),
+            ]
+            
+            driver_path = None
+            for path in chromedriver_paths:
+                if path and os.path.exists(path):
+                    driver_path = path
+                    break
+            
+            if driver_path:
+                print(f"{Fore.CYAN}[*] Using system ChromeDriver: {driver_path}{Style.RESET_ALL}")
+                service = Service(driver_path)
+                self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            else:
+                # Fall back to webdriver-manager
+                print(f"{Fore.YELLOW}[*] System ChromeDriver not found, using webdriver-manager...{Style.RESET_ALL}")
+                from webdriver_manager.chrome import ChromeDriverManager
+                service = Service(ChromeDriverManager().install())
+                self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            
+            return self.driver
+            
+        except Exception as e:
+            logging.error(f"Failed to setup Selenium: {str(e)}")
+            return None
+
     def print_banner(self):
         """Display tool banner"""
         banner = f"""
@@ -721,7 +794,7 @@ class WhoisUser:
 ║            {Fore.RED}WhoisUser - OSINT Investigation Tool{Fore.CYAN}                ║
 ║                                                               ║
 ║         {Fore.YELLOW}Professional Username Enumeration & Profiling{Fore.CYAN}         ║
-║                 {Fore.GREEN}Version 2.5 - Enhanced & Merged{Fore.CYAN}                ║
+║                 {Fore.GREEN}Version 2.6 - Fixed & Enhanced{Fore.CYAN}                 ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝{Style.RESET_ALL}
 
@@ -743,13 +816,14 @@ class WhoisUser:
     def run_sherlock(self):
         """Run Sherlock tool for username enumeration"""
         if 'sherlock' not in self.available_tools:
+            print(f"{Fore.YELLOW}[!] Sherlock not installed. Install with: pip3 install sherlock-project{Style.RESET_ALL}")
             return None
         
         print(f"\n{Fore.YELLOW}[*] Running Sherlock for enhanced username search...{Style.RESET_ALL}\n")
         
         try:
             output_file = f"{self.osint_dir}/sherlock_results.txt"
-            cmd = ['sherlock', self.username, '--output', output_file, '--timeout', '10', '--print-found']
+            cmd = [self.available_tools['sherlock'], self.username, '--output', output_file, '--timeout', '10', '--print-found']
             
             process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             
@@ -780,13 +854,14 @@ class WhoisUser:
     def run_maigret(self):
         """Run Maigret tool for username enumeration"""
         if 'maigret' not in self.available_tools:
+            print(f"{Fore.YELLOW}[!] Maigret not installed. Install with: pip3 install maigret{Style.RESET_ALL}")
             return None
         
         print(f"\n{Fore.YELLOW}[*] Running Maigret for deep OSINT search...{Style.RESET_ALL}\n")
         
         try:
             output_dir = f"{self.osint_dir}/maigret"
-            cmd = ['maigret', self.username, '--folderoutput', output_dir, '--timeout', '10']
+            cmd = [self.available_tools['maigret'], self.username, '--folderoutput', output_dir, '--timeout', '10']
             
             process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             print(f"{Fore.GREEN}[✓] Maigret completed - results saved to {output_dir}{Style.RESET_ALL}")
@@ -801,6 +876,7 @@ class WhoisUser:
     def run_holehe(self):
         """Run Holehe to check email-based accounts"""
         if 'holehe' not in self.available_tools:
+            print(f"{Fore.YELLOW}[!] Holehe not installed. Install with: pip3 install holehe{Style.RESET_ALL}")
             return None
         
         print(f"\n{Fore.YELLOW}[*] Running Holehe for email enumeration...{Style.RESET_ALL}\n")
@@ -815,7 +891,7 @@ class WhoisUser:
             results = []
             for email in email_variants:
                 output_file = f"{self.osint_dir}/holehe_{email.replace('@', '_at_')}.txt"
-                cmd = ['holehe', email]
+                cmd = [self.available_tools['holehe'], email]
                 
                 process = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
                 
@@ -836,13 +912,14 @@ class WhoisUser:
     def run_blackbird(self):
         """Run Blackbird for fast username search"""
         if 'blackbird' not in self.available_tools:
+            print(f"{Fore.YELLOW}[!] Blackbird not installed. Install from: https://github.com/p1ngul1n0/blackbird{Style.RESET_ALL}")
             return None
         
         print(f"\n{Fore.YELLOW}[*] Running Blackbird for fast username search...{Style.RESET_ALL}\n")
         
         try:
             output_file = f"{self.osint_dir}/blackbird_results.txt"
-            cmd = ['blackbird', '-u', self.username, '--dump']
+            cmd = [self.available_tools['blackbird'], '-u', self.username, '--dump']
             
             process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             
@@ -879,29 +956,15 @@ class WhoisUser:
     def take_screenshot(self, url, platform_name):
         """Capture screenshot of profile page"""
         try:
-            from selenium import webdriver
-            from selenium.webdriver.chrome.options import Options
-            from selenium.webdriver.chrome.service import Service
-            from webdriver_manager.chrome import ChromeDriverManager
-            
-            chrome_options = Options()
-            chrome_options.add_argument('--headless')
-            chrome_options.add_argument('--no-sandbox')
-            chrome_options.add_argument('--disable-dev-shm-usage')
-            chrome_options.add_argument('--disable-gpu')
-            chrome_options.add_argument('--window-size=1920,1080')
-            chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-            chrome_options.add_argument(f'user-agent={self.session.headers["User-Agent"]}')
-            
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
+            driver = self.setup_selenium_driver()
+            if not driver:
+                return None
             
             driver.get(url)
             time.sleep(3)
             
             screenshot_path = f"{self.images_dir}/{platform_name.replace('/', '_').replace(' ', '_')}.png"
             driver.save_screenshot(screenshot_path)
-            driver.quit()
             
             return screenshot_path
             
@@ -913,8 +976,31 @@ class WhoisUser:
         """Capture screenshots of all found profiles"""
         if not self.found_profiles:
             return
-            
-        print(f"\n{Fore.YELLOW}[*] Capturing screenshots of {len(self.found_profiles)} found profiles...{Style.RESET_ALL}\n")
+        
+        print(f"\n{Fore.YELLOW}[*] Attempting to capture screenshots of {len(self.found_profiles)} found profiles...{Style.RESET_ALL}")
+        
+        # Check if Selenium is available
+        try:
+            import selenium
+            from selenium import webdriver
+        except ImportError:
+            print(f"\n{Fore.YELLOW}[!] Selenium not installed. Skipping screenshots.{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}[!] Install with: pip3 install selenium{Style.RESET_ALL}\n")
+            return
+        
+        # Check if Chrome/Chromium is available
+        chrome_available = False
+        for chrome_path in ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser']:
+            if os.path.exists(chrome_path):
+                chrome_available = True
+                break
+        
+        if not chrome_available:
+            print(f"\n{Fore.YELLOW}[!] Chrome/Chromium not found. Skipping screenshots.{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}[!] Install with: sudo apt-get install chromium-browser{Style.RESET_ALL}\n")
+            return
+        
+        print(f"{Fore.CYAN}[*] Setting up browser...{Style.RESET_ALL}\n")
         
         for profile in self.found_profiles:
             if profile.get('source') == 'whoisuser':
@@ -923,13 +1009,18 @@ class WhoisUser:
                 if screenshot_path:
                     profile['screenshot'] = screenshot_path
                     print(f"{Fore.GREEN}[✓] Saved: {screenshot_path}{Style.RESET_ALL}")
+        
+        # Cleanup
+        if self.driver:
+            try:
+                self.driver.quit()
+            except:
+                pass
 
     def generate_report(self):
         """Generate comprehensive investigation reports"""
-        # Merge results from all sources
         all_profiles = self.found_profiles + self.sherlock_results
         
-        # Remove duplicates
         seen_urls = set()
         unique_profiles = []
         for profile in all_profiles:
@@ -937,10 +1028,8 @@ class WhoisUser:
                 seen_urls.add(profile['url'])
                 unique_profiles.append(profile)
         
-        # Sort by platform name
         unique_profiles.sort(key=lambda x: x['platform'])
         
-        # TXT Report
         txt_report_path = f"{self.output_dir}/FULL_REPORT.txt"
         with open(txt_report_path, 'w', encoding='utf-8') as f:
             f.write("="*80 + "\n")
@@ -950,13 +1039,13 @@ class WhoisUser:
             f.write(f"Target Username: {self.username}\n")
             f.write(f"Investigation ID: {self.timestamp}\n")
             f.write(f"Investigator: Anubhav (Cybersecurity & Cyber Forensic Researcher)\n")
-            f.write(f"Tool Version: 2.5 (Enhanced & Merged)\n")
+            f.write(f"Tool Version: 2.6 (Fixed & Enhanced)\n")
             f.write(f"Total Platforms Scanned: {len(self.platforms)}\n")
             f.write(f"Profiles Found (Direct): {len(self.found_profiles)}\n")
             f.write(f"Profiles Found (Sherlock): {len(self.sherlock_results)}\n")
             f.write(f"Total Unique Profiles: {len(unique_profiles)}\n")
             f.write(f"Failed Checks: {len(self.failed_checks)}\n")
-            f.write(f"Available OSINT Tools: {', '.join(self.available_tools.keys())}\n")
+            f.write(f"Available OSINT Tools: {', '.join(self.available_tools.keys()) if self.available_tools else 'None'}\n")
             f.write("\n" + "="*80 + "\n")
             f.write("DISCOVERED PROFILES\n")
             f.write("="*80 + "\n\n")
@@ -979,7 +1068,7 @@ class WhoisUser:
                 f.write("="*80 + "\n")
                 f.write("FAILED CHECKS (For Reference)\n")
                 f.write("="*80 + "\n\n")
-                for i, failed in enumerate(self.failed_checks[:20], 1):  # Limit to first 20
+                for i, failed in enumerate(self.failed_checks[:20], 1):
                     f.write(f"{i}. Platform: {failed['platform']}\n")
                     f.write(f"   URL: {failed['url']}\n")
                     f.write(f"   Reason: {failed.get('reason', 'unknown')}\n")
@@ -991,7 +1080,6 @@ class WhoisUser:
             f.write("END OF REPORT\n")
             f.write("="*80 + "\n")
         
-        # JSON Report
         json_report_path = f"{self.output_dir}/report.json"
         with open(json_report_path, 'w', encoding='utf-8') as f:
             json.dump({
@@ -1000,7 +1088,7 @@ class WhoisUser:
                     'timestamp': self.timestamp,
                     'date': datetime.now().isoformat(),
                     'investigator': 'Anubhav',
-                    'tool_version': '2.5',
+                    'tool_version': '2.6',
                     'total_platforms': len(self.platforms),
                     'profiles_found_direct': len(self.found_profiles),
                     'profiles_found_sherlock': len(self.sherlock_results),
@@ -1009,10 +1097,9 @@ class WhoisUser:
                     'osint_tools_used': list(self.available_tools.keys())
                 },
                 'profiles': unique_profiles,
-                'failed_checks': self.failed_checks[:50]  # Limit to first 50
+                'failed_checks': self.failed_checks[:50]
             }, f, indent=4)
         
-        # URLs List
         urls_path = f"{self.output_dir}/all_urls.txt"
         with open(urls_path, 'w', encoding='utf-8') as f:
             for profile in unique_profiles:
@@ -1044,7 +1131,6 @@ class WhoisUser:
         print(f"  • Screenshots: {Fore.WHITE}{self.images_dir}/{Style.RESET_ALL}")
         print(f"  • OSINT Results: {Fore.WHITE}{self.osint_dir}/{Style.RESET_ALL}\n")
         
-        # Performance stats
         print(f"{Fore.YELLOW}Performance:{Style.RESET_ALL}")
         success_rate = (len(self.found_profiles) / len(self.platforms)) * 100 if self.platforms else 0
         print(f"  • Detection Rate: {Fore.CYAN}{success_rate:.1f}%{Style.RESET_ALL}")
@@ -1056,33 +1142,23 @@ class WhoisUser:
         
         self.print_banner()
         
-        # Run external OSINT tools first
         if use_osint_tools:
             self.run_sherlock()
             self.run_maigret()
             self.run_holehe()
             self.run_blackbird()
         
-        # Run our custom scanner
         self.scan_platforms()
         
-        # Capture screenshots
         if capture_screenshots and self.found_profiles:
-            try:
-                self.capture_screenshots()
-            except ImportError:
-                print(f"\n{Fore.YELLOW}[!] Selenium not installed. Skipping screenshots.{Style.RESET_ALL}")
-                print(f"{Fore.YELLOW}[!] Install with: pip3 install selenium webdriver-manager{Style.RESET_ALL}\n")
+            self.capture_screenshots()
         
-        # Generate reports
         self.generate_report()
         self.print_summary()
         
-        # Cleanup
         if self.session:
             self.session.close()
         
-        # Final statistics
         elapsed_time = time.time() - start_time
         print(f"{Fore.CYAN}[*] Total execution time: {elapsed_time:.2f} seconds{Style.RESET_ALL}\n")
 
@@ -1100,9 +1176,14 @@ def main():
         print(f"\n{Fore.CYAN}Features:{Style.RESET_ALL}")
         print(f"  • Scans 100+ platforms (social media, developer sites, gaming, etc.)")
         print(f"  • Integrates Sherlock, Maigret, Holehe, Blackbird")
-        print(f"  • Automated screenshot capture")
+        print(f"  • Automated screenshot capture with proper ChromeDriver handling")
         print(f"  • Comprehensive TXT and JSON reports")
         print(f"  • Rate limiting and smart detection")
+        print(f"\n{Fore.YELLOW}OSINT Tools Installation:{Style.RESET_ALL}")
+        print(f"  pip3 install sherlock-project")
+        print(f"  pip3 install maigret")
+        print(f"  pip3 install holehe")
+        print(f"  git clone https://github.com/p1ngul1n0/blackbird && cd blackbird && pip3 install -r requirements.txt")
         print(f"\n{Fore.YELLOW}For educational and authorized testing only!{Style.RESET_ALL}\n")
         sys.exit(1)
     
