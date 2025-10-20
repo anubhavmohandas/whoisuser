@@ -1,22 +1,89 @@
-# WhoisUser - Python Dependencies
-# Required packages for username OSINT investigation tool
+# WhoisUser - Professional Username OSINT & Forensic Investigation Tool
+# Python Dependencies Requirements File
+# Author: Anubhav
+# Version: 2.6
 
-# Core HTTP requests
+# ============================================================================
+# CORE HTTP & NETWORKING
+# ============================================================================
 requests>=2.31.0
 urllib3>=2.1.0
 certifi>=2023.11.17
+idna>=3.6
 
-# Terminal colors and formatting
+# ============================================================================
+# TERMINAL INTERFACE & COLORS
+# ============================================================================
 colorama>=0.4.6
 
-# Screenshot automation (Selenium)
+# ============================================================================
+# WEB AUTOMATION & SCREENSHOTS
+# ============================================================================
 selenium>=4.15.0
 webdriver-manager>=4.0.1
 
-# Optional: If you want to use these tools via Python
-# maigret>=0.4.4
-# holehe>=1.0.0
-# social-analyzer>=1.0.0
+# ============================================================================
+# OPTIONAL OSINT TOOLS (Install if needed)
+# ============================================================================
+# Uncomment below to install OSINT tools via pip
 
-# Note: Sherlock and Blackbird are installed via git clone
-# in the install.sh script, not via pip
+# Username enumeration tools
+# sherlock-project>=0.14.3
+# maigret>=0.4.4
+# social-analyzer>=0.0.1
+
+# Email enumeration
+# holehe>=1.6.6
+
+# ============================================================================
+# ADDITIONAL UTILITIES (Optional but recommended)
+# ============================================================================
+# For better JSON handling
+# ujson>=5.9.0
+
+# For async requests (performance boost)
+# aiohttp>=3.9.1
+# asyncio>=3.4.3
+
+# For better HTML parsing
+# beautifulsoup4>=4.12.2
+# lxml>=4.9.3
+
+# For progress bars
+# tqdm>=4.66.1
+
+# For better logging
+# loguru>=0.7.2
+
+# ============================================================================
+# NOTES
+# ============================================================================
+# 1. Sherlock and Blackbird are best installed via git clone (see install.sh)
+# 2. Chrome/Chromium browser required for screenshots
+# 3. ChromeDriver will be auto-downloaded by webdriver-manager
+# 4. For best results, install all optional OSINT tools manually
+#
+# Installation Commands:
+#   pip3 install -r requirements.txt
+#   pip3 install -r requirements.txt --user (for user-only install)
+#   pip3 install -r requirements.txt --upgrade (to upgrade existing)
+#
+# Manual OSINT Tools Installation:
+#   pip3 install sherlock-project
+#   pip3 install maigret
+#   pip3 install holehe
+#   git clone https://github.com/p1ngul1n0/blackbird
+#
+# System Requirements:
+#   - Python 3.8+
+#   - Chrome/Chromium browser (for screenshots)
+#   - ChromeDriver (auto-installed by webdriver-manager)
+#   - Internet connection
+#
+# Tested On:
+#   - Ubuntu 20.04+
+#   - Debian 11+
+#   - Kali Linux
+#   - macOS 12+
+#   - Windows 10/11 (WSL recommended)
+# ============================================================================
