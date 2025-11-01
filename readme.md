@@ -293,6 +293,4 @@ Sherlock Project, Maigret, Holehe, Blackbird, and the OSINT Community
 
 ⚠️ **Remember: With great power comes great responsibility** ⚠️
 
-Use this tool ethically, legally, and responsibly.
-
 </div>
