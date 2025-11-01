@@ -3,7 +3,7 @@
 WhoisUser - Professional Username OSINT & Forensic Investigation Tool
 Author: Anubhav
 Description: Automated username enumeration with integrated OSINT tools
-Version: 2.7 OPTIMIZED (All Critical Issues Fixed)
+Version: 2.7 OPTIMIZED INTEGRATED (Fully Merged Results)
 """
 
 import requests
@@ -17,9 +17,10 @@ from colorama import Fore, Style, init
 import concurrent.futures
 import subprocess
 import shutil
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 import logging
 import atexit
+import re
 
 # Initialize colorama
 init(autoreset=True)
@@ -34,13 +35,12 @@ logging.basicConfig(
 class WhoisUser:
     def __init__(self, username, max_workers=15):
         self.username = username
-        self.max_workers = max_workers  # Configurable thread count
+        self.max_workers = max_workers
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.output_dir = f"investigations/{username}_{self.timestamp}"
         self.images_dir = f"{self.output_dir}/screenshots"
         self.osint_dir = f"{self.output_dir}/osint_results"
         self.found_profiles = []
-        self.sherlock_results = []
         self.failed_checks = []
         
         # Create output directories
@@ -69,7 +69,7 @@ class WhoisUser:
         self.request_delay = 0.3
         self.last_request_time = {}
         
-        # Selenium driver cache (REUSED for all screenshots)
+        # Selenium driver cache
         self.driver = None
         
         # Register cleanup
@@ -92,7 +92,7 @@ class WhoisUser:
 
     def check_osint_tools(self):
         """Check which OSINT tools are available on the system"""
-        tools_to_check = ['sherlock', 'maigret', 'social-analyzer', 'holehe', 'blackbird']
+        tools_to_check = ['sherlock', 'maigret', 'holehe', 'blackbird']
         tools = {}
         
         for tool in tools_to_check:
@@ -113,6 +113,60 @@ class WhoisUser:
                         break
         
         return tools
+
+    def normalize_url(self, url):
+        """Normalize URL for deduplication"""
+        try:
+            # Parse URL
+            parsed = urlparse(url.lower().strip())
+            
+            # Remove www
+            netloc = parsed.netloc.replace('www.', '')
+            
+            # Remove trailing slash from path
+            path = parsed.path.rstrip('/')
+            
+            # Reconstruct without query and fragment
+            normalized = urlunparse((
+                parsed.scheme,
+                netloc,
+                path,
+                '',  # params
+                '',  # query
+                ''   # fragment
+            ))
+            
+            return normalized
+        except:
+            return url.lower().strip()
+
+    def is_duplicate(self, url, existing_profiles):
+        """Check if URL is duplicate"""
+        normalized_new = self.normalize_url(url)
+        
+        for profile in existing_profiles:
+            normalized_existing = self.normalize_url(profile['url'])
+            if normalized_new == normalized_existing:
+                return True
+        
+        return False
+
+    def add_profile(self, profile_data):
+        """Add profile with duplicate checking"""
+        if not self.is_duplicate(profile_data['url'], self.found_profiles):
+            self.found_profiles.append(profile_data)
+            return True
+        else:
+            # Update existing profile to show multiple sources
+            for existing in self.found_profiles:
+                if self.normalize_url(existing['url']) == self.normalize_url(profile_data['url']):
+                    # Add source if not already present
+                    if 'found_by' not in existing:
+                        existing['found_by'] = [existing['source']]
+                    if profile_data['source'] not in existing['found_by']:
+                        existing['found_by'].append(profile_data['source'])
+                    break
+            return False
 
     def get_all_platforms(self):
         """Returns dictionary of all 100+ platforms to check"""
@@ -650,8 +704,9 @@ class WhoisUser:
                         'url': platform_data['url'],
                         'api_url': api_url,
                         'found_at': datetime.now().isoformat(),
-                        'source': 'whoisuser_api',
-                        'verified': True
+                        'source': 'whoisuser',
+                        'verified': True,
+                        'type': 'profile'
                     }
         except Exception as e:
             logging.debug(f"API check failed for {platform_name}: {str(e)}")
@@ -659,7 +714,7 @@ class WhoisUser:
         return None
 
     def is_valid_profile(self, url, content):
-        """✅ ENHANCED platform-specific validation to reduce false positives"""
+        """Enhanced platform-specific validation to reduce false positives"""
         domain = urlparse(url).netloc.lower()
         content_lower = content.lower()
         
@@ -758,7 +813,7 @@ class WhoisUser:
             if len(response.text.strip()) < 200:
                 return None
             
-            # ✅ CRITICAL: Platform-specific validation
+            # Platform-specific validation
             if not self.is_valid_profile(response.url, response.text):
                 self.failed_checks.append({
                     'platform': platform_name,
@@ -775,7 +830,8 @@ class WhoisUser:
                 'status_code': response.status_code,
                 'found_at': datetime.now().isoformat(),
                 'source': 'whoisuser',
-                'content_length': len(response.text)
+                'content_length': len(response.text),
+                'type': 'profile'
             }
             
         except requests.exceptions.Timeout:
@@ -792,8 +848,181 @@ class WhoisUser:
         
         return None
 
+    def parse_sherlock_results(self, output_file):
+        """Parse Sherlock output and extract profiles"""
+        profiles = []
+        
+        try:
+            if not os.path.exists(output_file):
+                return profiles
+            
+            with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                
+                # Extract URLs from Sherlock output
+                for line in content.split('\n'):
+                    if 'http' in line.lower():
+                        # Extract URL from line
+                        parts = line.split('http')
+                        if len(parts) >= 2:
+                            url = 'http' + parts[1].strip()
+                            
+                            # Clean URL (remove trailing characters)
+                            url = re.split(r'[\s\)]', url)[0]
+                            
+                            # Extract platform name
+                            domain = urlparse(url).netloc.replace('www.', '').split('.')[0].title()
+                            
+                            profiles.append({
+                                'platform': f"{domain} (Sherlock)",
+                                'url': url,
+                                'source': 'sherlock',
+                                'found_at': datetime.now().isoformat(),
+                                'type': 'profile'
+                            })
+            
+            print(f"{Fore.GREEN}[✓] Parsed Sherlock: {len(profiles)} profiles{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Fore.RED}[✗] Sherlock parsing error: {str(e)[:50]}{Style.RESET_ALL}")
+            logging.error(f"Sherlock parsing failed: {str(e)}")
+        
+        return profiles
+
+    def parse_maigret_results(self, output_dir):
+        """Parse Maigret output and extract profiles"""
+        profiles = []
+        
+        try:
+            maigret_dir = os.path.join(output_dir, self.username)
+            if not os.path.exists(maigret_dir):
+                return profiles
+            
+            # Try to find and parse TXT report
+            txt_file = os.path.join(maigret_dir, 'report.txt')
+            if os.path.exists(txt_file):
+                with open(txt_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                    
+                    # Extract URLs
+                    urls = re.findall(r'https?://[^\s<>"]+', content)
+                    for url in urls:
+                        # Clean URL
+                        url = url.rstrip('.,;:)')
+                        
+                        domain = urlparse(url).netloc.replace('www.', '').split('.')[0].title()
+                        
+                        profiles.append({
+                            'platform': f"{domain} (Maigret)",
+                            'url': url,
+                            'source': 'maigret',
+                            'found_at': datetime.now().isoformat(),
+                            'type': 'profile'
+                        })
+            
+            print(f"{Fore.GREEN}[✓] Parsed Maigret: {len(profiles)} profiles{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Fore.RED}[✗] Maigret parsing error: {str(e)[:50]}{Style.RESET_ALL}")
+            logging.error(f"Maigret parsing failed: {str(e)}")
+        
+        return profiles
+
+    def parse_holehe_results(self, output_files):
+        """Parse Holehe output and extract confirmed accounts"""
+        profiles = []
+        
+        try:
+            for output_file in output_files:
+                if not os.path.exists(output_file):
+                    continue
+                
+                with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                    
+                    # Extract email from filename
+                    email = os.path.basename(output_file).replace('holehe_', '').replace('.txt', '').replace('_at_', '@')
+                    
+                    # Look for confirmed services
+                    lines = content.split('\n')
+                    for line in lines:
+                        # Holehe shows [+] for found accounts
+                        if '[+]' in line or 'found' in line.lower():
+                            # Extract service name
+                            service_match = re.search(r'(\w+).*?(?:\[|\(|found|exists)', line, re.IGNORECASE)
+                            if service_match:
+                                service = service_match.group(1).title()
+                                
+                                profiles.append({
+                                    'platform': f"{service} (Email)",
+                                    'url': f"Email account found: {email}",
+                                    'source': 'holehe',
+                                    'found_at': datetime.now().isoformat(),
+                                    'type': 'email',
+                                    'email': email
+                                })
+            
+            print(f"{Fore.GREEN}[✓] Parsed Holehe: {len(profiles)} accounts{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Fore.RED}[✗] Holehe parsing error: {str(e)[:50]}{Style.RESET_ALL}")
+            logging.error(f"Holehe parsing failed: {str(e)}")
+        
+        return profiles
+
+    def parse_blackbird_results(self, output_file):
+        """Parse Blackbird output and extract profiles"""
+        profiles = []
+        
+        try:
+            if not os.path.exists(output_file):
+                return profiles
+            
+            with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                
+                # Extract URLs
+                urls = re.findall(r'https?://[^\s<>"]+', content)
+                for url in urls:
+                    # Clean URL
+                    url = url.rstrip('.,;:)')
+                    
+                    domain = urlparse(url).netloc.replace('www.', '').split('.')[0].title()
+                    
+                    profiles.append({
+                        'platform': f"{domain} (Blackbird)",
+                        'url': url,
+                        'source': 'blackbird',
+                        'found_at': datetime.now().isoformat(),
+                        'type': 'profile'
+                    })
+            
+            print(f"{Fore.GREEN}[✓] Parsed Blackbird: {len(profiles)} profiles{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Fore.RED}[✗] Blackbird parsing error: {str(e)[:50]}{Style.RESET_ALL}")
+            logging.error(f"Blackbird parsing failed: {str(e)}")
+        
+        return profiles
+
+    def merge_all_results(self):
+        """Merge all results from different sources and remove duplicates"""
+        print(f"\n{Fore.YELLOW}[*] Merging results from all sources...{Style.RESET_ALL}\n")
+        
+        all_sources = []
+        
+        # Collect all profiles
+        initial_count = len(self.found_profiles)
+        
+        # Add profiles from external tools
+        for profile in all_sources:
+            self.add_profile(profile)
+        
+        # Sort by platform name
+        self.found_profiles.sort(key=lambda x: x['platform'])
+        
+        print(f"{Fore.GREEN}[✓] Merge complete: {len(self.found_profiles)} unique profiles{Style.RESET_ALL}")
+        print(f"    Initial WhoisUser: {initial_count}")
+        print(f"    After deduplication: {len(self.found_profiles)}")
+
     def setup_selenium_driver(self):
-        """✅ OPTIMIZED: Setup Selenium WebDriver ONCE and reuse"""
+        """Setup Selenium WebDriver ONCE and reuse"""
         if self.driver:
             return self.driver
         
@@ -854,27 +1083,24 @@ class WhoisUser:
             if driver_path:
                 service = Service(driver_path)
             else:
-                # Use webdriver-manager
                 print(f"{Fore.YELLOW}[!] System ChromeDriver not found, downloading...{Style.RESET_ALL}")
                 try:
                     from webdriver_manager.chrome import ChromeDriverManager
                     service = Service(ChromeDriverManager().install())
                 except ImportError:
                     print(f"{Fore.RED}[✗] webdriver-manager not installed{Style.RESET_ALL}")
-                    print(f"{Fore.YELLOW}    Install: pip3 install webdriver-manager{Style.RESET_ALL}")
                     return None
             
             # Create driver with timeouts
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            self.driver.set_page_load_timeout(20)  # ✅ CRITICAL FIX: Add timeout
+            self.driver.set_page_load_timeout(20)
             self.driver.set_script_timeout(20)
             
-            print(f"{Fore.GREEN}[✓] ChromeDriver ready (will be reused for all screenshots){Style.RESET_ALL}")
+            print(f"{Fore.GREEN}[✓] ChromeDriver ready{Style.RESET_ALL}")
             return self.driver
             
         except ImportError:
             print(f"{Fore.RED}[✗] Selenium not installed{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}    Install: pip3 install selenium{Style.RESET_ALL}")
             return None
         except Exception as e:
             print(f"{Fore.RED}[✗] Failed to setup Selenium: {str(e)}{Style.RESET_ALL}")
@@ -889,7 +1115,7 @@ class WhoisUser:
 ║            {Fore.RED}WhoisUser - OSINT Investigation Tool{Fore.CYAN}                ║
 ║                                                               ║
 ║         {Fore.YELLOW}Professional Username Enumeration & Profiling{Fore.CYAN}         ║
-║              {Fore.GREEN}Version 2.7 OPTIMIZED - Production Ready{Fore.CYAN}          ║
+║       {Fore.GREEN}Version 2.7 OPTIMIZED INTEGRATED - All Results Merged{Fore.CYAN}   ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝{Style.RESET_ALL}
 
@@ -912,7 +1138,7 @@ class WhoisUser:
     def run_sherlock(self):
         """Run Sherlock tool for username enumeration"""
         if 'sherlock' not in self.available_tools:
-            return None
+            return []
         
         print(f"\n{Fore.YELLOW}[*] Running Sherlock for enhanced username search...{Style.RESET_ALL}\n")
         
@@ -922,34 +1148,23 @@ class WhoisUser:
             
             process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             
-            if os.path.exists(output_file):
-                with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read()
-                    for line in content.split('\n'):
-                        if 'http' in line.lower():
-                            parts = line.split('http')
-                            if len(parts) >= 2:
-                                url = 'http' + parts[1].strip()
-                                domain = urlparse(url).netloc.replace('www.', '').split('.')[0].title()
-                                self.sherlock_results.append({
-                                    'platform': f"{domain} (Sherlock)",
-                                    'url': url,
-                                    'source': 'sherlock'
-                                })
-                
-                print(f"{Fore.GREEN}[✓] Sherlock completed: {len(self.sherlock_results)} additional profiles found{Style.RESET_ALL}")
-                return output_file
+            # Parse results
+            profiles = self.parse_sherlock_results(output_file)
+            
+            print(f"{Fore.GREEN}[✓] Sherlock completed{Style.RESET_ALL}")
+            return profiles
+            
         except subprocess.TimeoutExpired:
             print(f"{Fore.RED}[✗] Sherlock timed out{Style.RESET_ALL}")
         except Exception as e:
             print(f"{Fore.RED}[✗] Sherlock error: {str(e)[:60]}{Style.RESET_ALL}")
         
-        return None
+        return []
 
     def run_maigret(self):
         """Run Maigret tool for username enumeration"""
         if 'maigret' not in self.available_tools:
-            return None
+            return []
         
         print(f"\n{Fore.YELLOW}[*] Running Maigret for deep OSINT search...{Style.RESET_ALL}\n")
         
@@ -958,19 +1173,24 @@ class WhoisUser:
             cmd = [self.available_tools['maigret'], self.username, '--folderoutput', output_dir, '--timeout', '10']
             
             process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            print(f"{Fore.GREEN}[✓] Maigret completed - results saved to {output_dir}{Style.RESET_ALL}")
-            return output_dir
+            
+            # Parse results
+            profiles = self.parse_maigret_results(output_dir)
+            
+            print(f"{Fore.GREEN}[✓] Maigret completed{Style.RESET_ALL}")
+            return profiles
+            
         except subprocess.TimeoutExpired:
             print(f"{Fore.RED}[✗] Maigret timed out{Style.RESET_ALL}")
         except Exception as e:
             print(f"{Fore.RED}[✗] Maigret error{Style.RESET_ALL}")
         
-        return None
+        return []
 
     def run_holehe(self):
         """Run Holehe to check email-based accounts"""
         if 'holehe' not in self.available_tools:
-            return None
+            return []
         
         print(f"\n{Fore.YELLOW}[*] Running Holehe for email enumeration...{Style.RESET_ALL}\n")
         
@@ -981,7 +1201,7 @@ class WhoisUser:
                 f"{self.username}@outlook.com",
             ]
             
-            results = []
+            output_files = []
             for email in email_variants:
                 output_file = f"{self.osint_dir}/holehe_{email.replace('@', '_at_')}.txt"
                 cmd = [self.available_tools['holehe'], email]
@@ -991,19 +1211,23 @@ class WhoisUser:
                 with open(output_file, 'w') as f:
                     f.write(process.stdout)
                 
-                results.append(output_file)
+                output_files.append(output_file)
             
-            print(f"{Fore.GREEN}[✓] Holehe completed - checked {len(email_variants)} email variants{Style.RESET_ALL}")
-            return results
+            # Parse results
+            profiles = self.parse_holehe_results(output_files)
+            
+            print(f"{Fore.GREEN}[✓] Holehe completed{Style.RESET_ALL}")
+            return profiles
+            
         except Exception as e:
             print(f"{Fore.RED}[✗] Holehe error{Style.RESET_ALL}")
         
-        return None
+        return []
 
     def run_blackbird(self):
         """Run Blackbird for fast username search"""
         if 'blackbird' not in self.available_tools:
-            return None
+            return []
         
         print(f"\n{Fore.YELLOW}[*] Running Blackbird for fast username search...{Style.RESET_ALL}\n")
         
@@ -1016,12 +1240,16 @@ class WhoisUser:
             with open(output_file, 'w') as f:
                 f.write(process.stdout)
             
-            print(f"{Fore.GREEN}[✓] Blackbird completed - results saved{Style.RESET_ALL}")
-            return output_file
+            # Parse results
+            profiles = self.parse_blackbird_results(output_file)
+            
+            print(f"{Fore.GREEN}[✓] Blackbird completed{Style.RESET_ALL}")
+            return profiles
+            
         except Exception as e:
             print(f"{Fore.RED}[✗] Blackbird error{Style.RESET_ALL}")
         
-        return None
+        return []
 
     def scan_platforms(self):
         """Scan all platforms using concurrent threads"""
@@ -1037,27 +1265,24 @@ class WhoisUser:
                 try:
                     result = future.result()
                     if result:
-                        self.found_profiles.append(result)
+                        self.add_profile(result)
                 except Exception as e:
                     logging.error(f"Error in future: {str(e)}")
 
     def take_screenshot(self, url, platform_name):
-        """✅ OPTIMIZED: Reuse existing driver for all screenshots"""
+        """Reuse existing driver for all screenshots"""
         try:
-            driver = self.driver  # Use existing driver, don't recreate
+            driver = self.driver
             if not driver:
                 return None
             
-            # Navigate with timeout protection
             driver.get(url)
-            time.sleep(4)  # Wait for page load
+            time.sleep(4)
             
             screenshot_path = f"{self.images_dir}/{platform_name.replace('/', '_').replace(' ', '_')}.png"
             
-            # Save screenshot
             driver.save_screenshot(screenshot_path)
             
-            # ✅ CRITICAL FIX: Verify file exists and has content
             if os.path.exists(screenshot_path) and os.path.getsize(screenshot_path) > 0:
                 return screenshot_path
             else:
@@ -1070,22 +1295,25 @@ class WhoisUser:
             return None
 
     def capture_screenshots(self):
-        """✅ OPTIMIZED: Capture screenshots using single driver instance"""
+        """Capture screenshots using single driver instance"""
         if not self.found_profiles:
             return
         
-        print(f"\n{Fore.YELLOW}[*] Attempting to capture screenshots of {len(self.found_profiles)} found profiles...{Style.RESET_ALL}\n")
+        # Only screenshot whoisuser-found profiles
+        whoisuser_profiles = [p for p in self.found_profiles if p.get('source') == 'whoisuser' and p.get('type') == 'profile']
         
-        # Check if Selenium is available
+        if not whoisuser_profiles:
+            return
+        
+        print(f"\n{Fore.YELLOW}[*] Attempting to capture screenshots of {len(whoisuser_profiles)} found profiles...{Style.RESET_ALL}\n")
+        
         try:
             import selenium
             from selenium import webdriver
         except ImportError:
-            print(f"{Fore.YELLOW}[!] Selenium not installed. Skipping screenshots.{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}[!] Install with: pip3 install selenium webdriver-manager{Style.RESET_ALL}\n")
+            print(f"{Fore.YELLOW}[!] Selenium not installed. Skipping screenshots.{Style.RESET_ALL}\n")
             return
         
-        # Check if Chrome/Chromium is available
         chrome_available = False
         for chrome_path in ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser']:
             if os.path.exists(chrome_path):
@@ -1093,40 +1321,35 @@ class WhoisUser:
                 break
         
         if not chrome_available:
-            print(f"{Fore.YELLOW}[!] Chrome/Chromium not found. Skipping screenshots.{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}[!] Install with: sudo apt-get install chromium-browser{Style.RESET_ALL}\n")
+            print(f"{Fore.YELLOW}[!] Chrome/Chromium not found. Skipping screenshots.{Style.RESET_ALL}\n")
             return
         
-        # ✅ CRITICAL: Setup driver ONCE before loop
         if not self.setup_selenium_driver():
             print(f"{Fore.RED}[✗] Failed to setup ChromeDriver{Style.RESET_ALL}")
             return
         
         screenshot_count = 0
-        for i, profile in enumerate(self.found_profiles, 1):
-            if profile.get('source') == 'whoisuser':
-                print(f"{Fore.CYAN}[{i}/{len(self.found_profiles)}] {profile['platform']}{Style.RESET_ALL}")
-                screenshot_path = self.take_screenshot(profile['url'], profile['platform'])
-                if screenshot_path:
-                    profile['screenshot'] = screenshot_path
-                    screenshot_count += 1
-                    print(f"{Fore.GREEN}    ✓ Saved: {os.path.basename(screenshot_path)}{Style.RESET_ALL}")
+        for i, profile in enumerate(whoisuser_profiles, 1):
+            print(f"{Fore.CYAN}[{i}/{len(whoisuser_profiles)}] {profile['platform']}{Style.RESET_ALL}")
+            screenshot_path = self.take_screenshot(profile['url'], profile['platform'])
+            if screenshot_path:
+                profile['screenshot'] = screenshot_path
+                screenshot_count += 1
+                print(f"{Fore.GREEN}    ✓ Saved: {os.path.basename(screenshot_path)}{Style.RESET_ALL}")
         
-        print(f"\n{Fore.GREEN}[✓] Screenshots captured: {screenshot_count}/{len(self.found_profiles)}{Style.RESET_ALL}")
+        print(f"\n{Fore.GREEN}[✓] Screenshots captured: {screenshot_count}/{len(whoisuser_profiles)}{Style.RESET_ALL}")
 
     def generate_report(self):
-        """Generate comprehensive investigation reports"""
-        all_profiles = self.found_profiles + self.sherlock_results
+        """Generate comprehensive investigation reports with merged results"""
         
-        seen_urls = set()
-        unique_profiles = []
-        for profile in all_profiles:
-            if profile['url'] not in seen_urls:
-                seen_urls.add(profile['url'])
-                unique_profiles.append(profile)
+        # Count by source
+        whoisuser_count = len([p for p in self.found_profiles if p.get('source') == 'whoisuser'])
+        sherlock_count = len([p for p in self.found_profiles if p.get('source') == 'sherlock'])
+        maigret_count = len([p for p in self.found_profiles if p.get('source') == 'maigret'])
+        holehe_count = len([p for p in self.found_profiles if p.get('source') == 'holehe'])
+        blackbird_count = len([p for p in self.found_profiles if p.get('source') == 'blackbird'])
         
-        unique_profiles.sort(key=lambda x: x['platform'])
-        
+        # Generate TXT report
         txt_report_path = f"{self.output_dir}/FULL_REPORT.txt"
         with open(txt_report_path, 'w', encoding='utf-8') as f:
             f.write("="*80 + "\n")
@@ -1136,21 +1359,28 @@ class WhoisUser:
             f.write(f"Target Username: {self.username}\n")
             f.write(f"Investigation ID: {self.timestamp}\n")
             f.write(f"Investigator: Anubhav (Cybersecurity & Cyber Forensic Researcher)\n")
-            f.write(f"Tool Version: 2.7 OPTIMIZED\n")
+            f.write(f"Tool Version: 2.7 OPTIMIZED INTEGRATED\n")
             f.write(f"Total Platforms Scanned: {len(self.platforms)}\n")
-            f.write(f"Profiles Found (Direct): {len(self.found_profiles)}\n")
-            f.write(f"Profiles Found (Sherlock): {len(self.sherlock_results)}\n")
-            f.write(f"Total Unique Profiles: {len(unique_profiles)}\n")
+            f.write(f"Total Unique Profiles Found: {len(self.found_profiles)}\n")
+            f.write(f"\n")
+            f.write(f"Breakdown by Source:\n")
+            f.write(f"  - WhoisUser Direct: {whoisuser_count}\n")
+            f.write(f"  - Sherlock: {sherlock_count}\n")
+            f.write(f"  - Maigret: {maigret_count}\n")
+            f.write(f"  - Holehe: {holehe_count}\n")
+            f.write(f"  - Blackbird: {blackbird_count}\n")
             f.write(f"Failed Checks: {len(self.failed_checks)}\n")
             f.write(f"Available OSINT Tools: {', '.join(self.available_tools.keys()) if self.available_tools else 'None'}\n")
             f.write("\n" + "="*80 + "\n")
-            f.write("DISCOVERED PROFILES\n")
+            f.write("DISCOVERED PROFILES (MERGED FROM ALL SOURCES)\n")
             f.write("="*80 + "\n\n")
             
-            for i, profile in enumerate(unique_profiles, 1):
+            for i, profile in enumerate(self.found_profiles, 1):
                 f.write(f"{i}. Platform: {profile['platform']}\n")
                 f.write(f"   URL: {profile['url']}\n")
                 f.write(f"   Source: {profile.get('source', 'unknown')}\n")
+                if 'found_by' in profile:
+                    f.write(f"   Found By: {', '.join(profile['found_by'])}\n")
                 if 'status_code' in profile:
                     f.write(f"   Status: Active (HTTP {profile['status_code']})\n")
                 if 'found_at' in profile:
@@ -1159,6 +1389,10 @@ class WhoisUser:
                     f.write(f"   Evidence: {profile['screenshot']}\n")
                 if 'verified' in profile and profile['verified']:
                     f.write(f"   Verification: API Verified ✓\n")
+                if profile.get('type') == 'email':
+                    f.write(f"   Type: Email Account\n")
+                    if 'email' in profile:
+                        f.write(f"   Email: {profile['email']}\n")
                 f.write("\n")
             
             if self.failed_checks:
@@ -1177,6 +1411,7 @@ class WhoisUser:
             f.write("END OF REPORT\n")
             f.write("="*80 + "\n")
         
+        # Generate JSON report
         json_report_path = f"{self.output_dir}/report.json"
         with open(json_report_path, 'w', encoding='utf-8') as f:
             json.dump({
@@ -1185,28 +1420,41 @@ class WhoisUser:
                     'timestamp': self.timestamp,
                     'date': datetime.now().isoformat(),
                     'investigator': 'Anubhav',
-                    'tool_version': '2.7 OPTIMIZED',
+                    'tool_version': '2.7 OPTIMIZED INTEGRATED',
                     'total_platforms': len(self.platforms),
-                    'profiles_found_direct': len(self.found_profiles),
-                    'profiles_found_sherlock': len(self.sherlock_results),
-                    'total_unique_profiles': len(unique_profiles),
+                    'total_unique_profiles': len(self.found_profiles),
+                    'breakdown_by_source': {
+                        'whoisuser': whoisuser_count,
+                        'sherlock': sherlock_count,
+                        'maigret': maigret_count,
+                        'holehe': holehe_count,
+                        'blackbird': blackbird_count
+                    },
                     'failed_checks': len(self.failed_checks),
                     'osint_tools_used': list(self.available_tools.keys())
                 },
-                'profiles': unique_profiles,
+                'profiles': self.found_profiles,
                 'failed_checks': self.failed_checks[:50]
             }, f, indent=4)
         
+        # Generate URLs list
         urls_path = f"{self.output_dir}/all_urls.txt"
         with open(urls_path, 'w', encoding='utf-8') as f:
-            for profile in unique_profiles:
-                f.write(f"{profile['url']}\n")
+            for profile in self.found_profiles:
+                if profile.get('type') == 'profile':  # Only actual URLs, not email descriptions
+                    f.write(f"{profile['url']}\n")
         
         print(f"\n{Fore.GREEN}[✓] Reports generated successfully{Style.RESET_ALL}")
 
     def print_summary(self):
-        """Print investigation summary"""
-        all_profiles = len(self.found_profiles) + len(self.sherlock_results)
+        """Print investigation summary with merged results"""
+        
+        # Count by source
+        whoisuser_count = len([p for p in self.found_profiles if p.get('source') == 'whoisuser'])
+        sherlock_count = len([p for p in self.found_profiles if p.get('source') == 'sherlock'])
+        maigret_count = len([p for p in self.found_profiles if p.get('source') == 'maigret'])
+        holehe_count = len([p for p in self.found_profiles if p.get('source') == 'holehe'])
+        blackbird_count = len([p for p in self.found_profiles if p.get('source') == 'blackbird'])
         
         print(f"\n{Fore.CYAN}{'='*80}{Style.RESET_ALL}")
         print(f"{Fore.GREEN}INVESTIGATION COMPLETE!{Style.RESET_ALL}")
@@ -1214,10 +1462,17 @@ class WhoisUser:
         
         print(f"{Fore.YELLOW}Summary:{Style.RESET_ALL}")
         print(f"  • Total Platforms Scanned: {Fore.WHITE}{len(self.platforms)}{Style.RESET_ALL}")
-        print(f"  • Profiles Found (Direct): {Fore.GREEN}{len(self.found_profiles)}{Style.RESET_ALL}")
-        if self.sherlock_results:
-            print(f"  • Profiles Found (Sherlock): {Fore.GREEN}{len(self.sherlock_results)}{Style.RESET_ALL}")
-        print(f"  • Total Profiles: {Fore.CYAN}{all_profiles}{Style.RESET_ALL}")
+        print(f"  • Total Unique Profiles Found: {Fore.CYAN}{len(self.found_profiles)}{Style.RESET_ALL}")
+        print(f"\n{Fore.YELLOW}Breakdown by Source:{Style.RESET_ALL}")
+        print(f"  • WhoisUser Direct: {Fore.GREEN}{whoisuser_count}{Style.RESET_ALL}")
+        if sherlock_count > 0:
+            print(f"  • Sherlock: {Fore.GREEN}{sherlock_count}{Style.RESET_ALL}")
+        if maigret_count > 0:
+            print(f"  • Maigret: {Fore.GREEN}{maigret_count}{Style.RESET_ALL}")
+        if holehe_count > 0:
+            print(f"  • Holehe: {Fore.GREEN}{holehe_count}{Style.RESET_ALL}")
+        if blackbird_count > 0:
+            print(f"  • Blackbird: {Fore.GREEN}{blackbird_count}{Style.RESET_ALL}")
         print(f"  • Failed Checks: {Fore.RED}{len(self.failed_checks)}{Style.RESET_ALL}")
         print(f"  • OSINT Tools Used: {Fore.WHITE}{len(self.available_tools)}{Style.RESET_ALL}\n")
         
@@ -1234,28 +1489,58 @@ class WhoisUser:
         print(f"  • Investigation ID: {Fore.WHITE}{self.timestamp}{Style.RESET_ALL}\n")
 
     def run(self, capture_screenshots=True, use_osint_tools=True):
-        """✅ OPTIMIZED: Execute investigation with proper cleanup"""
+        """Execute investigation with proper cleanup"""
         start_time = time.time()
         
         try:
             self.print_banner()
             
-            if use_osint_tools:
-                self.run_sherlock()
-                self.run_maigret()
-                self.run_holehe()
-                self.run_blackbird()
+            # Run external OSINT tools and collect results
+            external_profiles = []
             
+            if use_osint_tools:
+                sherlock_profiles = self.run_sherlock()
+                external_profiles.extend(sherlock_profiles)
+                
+                maigret_profiles = self.run_maigret()
+                external_profiles.extend(maigret_profiles)
+                
+                holehe_profiles = self.run_holehe()
+                external_profiles.extend(holehe_profiles)
+                
+                blackbird_profiles = self.run_blackbird()
+                external_profiles.extend(blackbird_profiles)
+            
+            # Scan platforms with WhoisUser
             self.scan_platforms()
             
+            # Merge all results
+            print(f"\n{Fore.YELLOW}[*] Merging results from all sources...{Style.RESET_ALL}\n")
+            
+            initial_count = len(self.found_profiles)
+            
+            # Add external tool results with deduplication
+            for profile in external_profiles:
+                self.add_profile(profile)
+            
+            # Sort by platform name
+            self.found_profiles.sort(key=lambda x: x['platform'])
+            
+            print(f"{Fore.GREEN}[✓] Merge complete: {len(self.found_profiles)} unique profiles{Style.RESET_ALL}")
+            print(f"    WhoisUser found: {initial_count}")
+            print(f"    External tools found: {len(external_profiles)}")
+            print(f"    After deduplication: {len(self.found_profiles)}")
+            
+            # Capture screenshots
             if capture_screenshots and self.found_profiles:
                 self.capture_screenshots()
             
+            # Generate reports
             self.generate_report()
             self.print_summary()
             
         finally:
-            # ✅ CRITICAL: Always cleanup resources
+            # Always cleanup resources
             self.cleanup()
             
             elapsed_time = time.time() - start_time
@@ -1276,8 +1561,9 @@ def main():
         print(f"  whoisuser johndoe --no-screenshots --no-osint-tools")
         print(f"\n{Fore.CYAN}Features:{Style.RESET_ALL}")
         print(f"  • Scans 100+ platforms (social media, developer sites, gaming, etc.)")
-        print(f"  • Integrates Sherlock, Maigret, Holehe, Blackbird, Social-Analyzer")
-        print(f"  • Automated screenshot capture with ChromeDriver reuse (FAST)")
+        print(f"  • Integrates Sherlock, Maigret, Holehe, Blackbird")
+        print(f"  • Merges all results with automatic deduplication")
+        print(f"  • Automated screenshot capture with ChromeDriver reuse")
         print(f"  • Comprehensive TXT and JSON reports")
         print(f"  • Enhanced platform-specific validation (reduced false positives)")
         print(f"  • Configurable thread count for performance tuning")
