@@ -240,6 +240,26 @@ sudo chmod +x /usr/local/bin/whoisuser
 ```
 
 ---
+## ARM64 Compatibility Note
+
+WhoisUser works perfectly on ARM-based systems (Raspberry Pi, Apple Silicon, ARM servers) with one limitation:
+
+**Screenshot functionality is not available on ARM64** due to ChromeDriver compatibility issues.
+
+**Workaround**: Use the `--no-screenshots` flag (all other features work normally):
+```bash
+whoisuser <username> --no-screenshots
+```
+
+**What you get on ARM64:**
+- ✅ Full platform scanning (100+ sites)
+- ✅ Profile URL discovery
+- ✅ OSINT tool integration (Sherlock, Maigret, Holehe, Blackbird)
+- ✅ Complete reports (TXT, JSON, URL lists)
+- ✅ Email enumeration
+- ❌ Screenshot capture (disabled)
+
+**Performance**: Actually faster without screenshots! ⚡
 
 ## ⚖️ Legal Disclaimer
 
